@@ -1,0 +1,105 @@
+{
+  "artifact_id": 13250,
+  "artifact_kind": "code_bundle",
+  "base_revision": 0,
+  "file_count": 7,
+  "files": [
+    {
+      "checksum": "c4570ed8b14ab0ebf06c4420b8db6be9e2cd2dcc25ba0c35f4d270693c84e9e9",
+      "content_type": "application/json",
+      "derived_from": [],
+      "md5": "a0d470f07fe81941e4571375cc64a99c",
+      "media_type": "application/json",
+      "path": "HmaxUnlockerPro/Data/mcc_mnc.json",
+      "produced_by_plan_task": "code-agent",
+      "revision": 11,
+      "sha256": "c4570ed8b14ab0ebf06c4420b8db6be9e2cd2dcc25ba0c35f4d270693c84e9e9",
+      "size": 1719
+    },
+    {
+      "checksum": "33d7e670fa5a260411f190027ab04f84e66c6acf71688f5cf0b52706c69bf3df",
+      "content_type": "application/zip",
+      "derived_from": [],
+      "md5": "2adc6300525eec9279ffaedff9cd4480",
+      "media_type": "application/zip",
+      "path": "HmaxUnlockerPro_Complete.zip",
+      "produced_by_plan_task": "code-agent",
+      "revision": 12,
+      "sha256": "33d7e670fa5a260411f190027ab04f84e66c6acf71688f5cf0b52706c69bf3df",
+      "size": 31267
+    },
+    {
+      "checksum": "bb3c121bc9fac895ba28950e2b322015f5910a17d884c972ed1254dd3bce9782",
+      "content_type": "application/json",
+      "derived_from": [],
+      "md5": "f481e549aefd189f40a359d52154875a",
+      "media_type": "application/json",
+      "path": "_tmp_src/work10081/HmaxUnlockerPro/Data/mcc_mnc.json",
+      "produced_by_plan_task": "code-agent",
+      "revision": 1,
+      "sha256": "bb3c121bc9fac895ba28950e2b322015f5910a17d884c972ed1254dd3bce9782",
+      "size": 1641
+    },
+    {
+      "checksum": "1931ded4f614ef98c1f65b712217b9f77c90039d4df8fb89625a810b5194b93d",
+      "content_type": "text/plain; charset=utf-8",
+      "derived_from": [],
+      "md5": "96a084bb313c8ee1703862b39b693e13",
+      "media_type": "text/plain; charset=utf-8",
+      "path": "build_project.py",
+      "produced_by_plan_task": "code-agent",
+      "revision": 10,
+      "sha256": "1931ded4f614ef98c1f65b712217b9f77c90039d4df8fb89625a810b5194b93d",
+      "size": 21269
+    },
+    {
+      "checksum": "edc61055a7371c2e812f7c1896b5024b884a8682038a50014134e6567d0f1e7a",
+      "content_type": "text/plain; charset=utf-8",
+      "derived_from": [],
+      "md5": "b85888c9448d417d55d14aee0dfe5404",
+      "media_type": "text/plain; charset=utf-8",
+      "path": "manifest.txt",
+      "produced_by_plan_task": "code-agent",
+      "revision": 12,
+      "sha256": "edc61055a7371c2e812f7c1896b5024b884a8682038a50014134e6567d0f1e7a",
+      "size": 1241
+    },
+    {
+      "checksum": "20f046f37bde288a8ca41d104e146f55d1d7aeaf3abb1602554bac1cdb9d5bf1",
+      "content_type": "text/plain; charset=utf-8",
+      "derived_from": [],
+      "md5": "51e115d1f1646be17726de46f061e1be",
+      "media_type": "text/plain; charset=utf-8",
+      "path": "package_project.py",
+      "produced_by_plan_task": "code-agent",
+      "revision": 8,
+      "sha256": "20f046f37bde288a8ca41d104e146f55d1d7aeaf3abb1602554bac1cdb9d5bf1",
+      "size": 1075
+    },
+    {
+      "checksum": "11b1285f3815be23c7527784ca500f5577eadc2a3e8c7de61fa0ae5650e3bc29",
+      "content_type": "text/plain; charset=utf-8",
+      "derived_from": [],
+      "md5": "0a1105e447001c7108ee29df42d25b35",
+      "media_type": "text/plain; charset=utf-8",
+      "path": "validate_project.py",
+      "produced_by_plan_task": "code-agent",
+      "revision": 6,
+      "sha256": "11b1285f3815be23c7527784ca500f5577eadc2a3e8c7de61fa0ae5650e3bc29",
+      "size": 5629
+    }
+  ],
+  "key": {
+    "ssouid": "980100243",
+    "chat_id": "1149343",
+    "message_id": "1698310",
+    "run_id": "message-1698310"
+  },
+  "result_manifest_path": "sandbox/results/980100243/01M5RJK3X35TGGA1ZYMBN2Y8VW/1149343/1698310/message-1698310/1792900552197860584/manifest.json",
+  "result_root": "sandbox/results/980100243/01M5RJK3X35TGGA1ZYMBN2Y8VW/1149343/1698310/message-1698310/1792900552197860584",
+  "revision": 1,
+  "sandbox_id": "01M5RJK3X35TGGA1ZYMBN2Y8VW",
+  "total_bytes": 63841,
+  "work_id": 12187,
+  "workspace": "chats/chat-1149343/messages/message-1698310"
+}

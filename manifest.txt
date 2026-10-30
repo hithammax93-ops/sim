@@ -1,0 +1,32 @@
+HmaxUnlockerPro Project File Listing
+============================================================
+
+Data/mcc_mnc.json 1719 bytes
+Engine/Backup/BackupEngine.cs 5642 bytes
+Engine/Communication/AdbShell.cs 4457 bytes
+Engine/Communication/IAdbShell.cs 781 bytes
+Engine/Detection/ChipsetDetector.cs 3912 bytes
+Engine/Detection/PathDiscoveryEngine.cs 5108 bytes
+Engine/Info/DeviceInfoReader.cs 9204 bytes
+Engine/Logging/ConsoleLogger.cs 1001 bytes
+Engine/Logging/ILogger.cs 225 bytes
+Engine/Logging/WinFormsLogger.cs 1246 bytes
+Engine/Models/DeviceModels.cs 3751 bytes
+Engine/Models/Enums.cs 556 bytes
+Engine/Network/MccMncDatabase.cs 8349 bytes
+Engine/Network/NetworkStore.cs 1065 bytes
+Engine/Samsung/SamsungPackageManager.cs 4776 bytes
+Engine/Strategies/ExynosStrategy.cs 1124 bytes
+Engine/Strategies/IPatchStrategy.cs 561 bytes
+Engine/Strategies/MediaTekStrategy.cs 4401 bytes
+Engine/Strategies/PatchStrategyFactory.cs 848 bytes
+Engine/Strategies/QualcommStrategy.cs 5382 bytes
+Engine/UniversalBypassEngine.cs 5292 bytes
+Forms/Form1.Designer.cs 20096 bytes
+Forms/Form1.cs 10853 bytes
+Forms/NetworkConfigForm.cs 9285 bytes
+HmaxUnlockerPro.csproj 4016 bytes
+Program.cs 328 bytes
+packages.config 138 bytes
+
+HmaxUnlockerPro_Complete.zip 31267 bytes

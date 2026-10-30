@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}</ProjectGuid>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>HmaxUnlocker</RootNamespace>
+    <AssemblyName>HmaxUnlockerPro</AssemblyName>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Newtonsoft.Json, Version=13.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed, processorArchitecture=MSIL">
+      <HintPath>packages\Newtonsoft.Json.13.0.3\lib\net45\Newtonsoft.Json.dll</HintPath>
+    </Reference>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Xml" />
+    <Reference Include="System.Xml.Linq" />
+    <Reference Include="System.Data" />
+    <Reference Include="System.Net.Http" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Engine\Efs\BackupModifyInjectEngine.cs" />
+    <Compile Include="Engine\Efs\EfsFileModifier.cs" />
+    <Compile Include="Engine\Efs\SimStateController.cs" />
+    <Compile Include="Engine\Cp\CpInjectEngine.cs" />
+    <Compile Include="Engine\Ota\OtaBlocker.cs" />
+    <Compile Include="Program.cs" />
+    <Compile Include="Forms\Form1.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Forms\Form1.Designer.cs">
+      <DependentUpon>Form1.cs</DependentUpon>
+    </Compile>
+    <Compile Include="Forms\NetworkConfigForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Forms\PromptDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Forms\RebootDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Engine\Communication\IAdbShell.cs" />
+    <Compile Include="Engine\Communication\AdbShell.cs" />
+    <Compile Include="Engine\Detection\ChipsetDetector.cs" />
+    <Compile Include="Engine\Detection\PathDiscoveryEngine.cs" />
+    <Compile Include="Engine\Strategies\IPatchStrategy.cs" />
+    <Compile Include="Engine\Strategies\QualcommStrategy.cs" />
+    <Compile Include="Engine\Strategies\MediaTekStrategy.cs" />
+    <Compile Include="Engine\Strategies\ExynosStrategy.cs" />
+    <Compile Include="Engine\Strategies\PatchStrategyFactory.cs" />
+    <Compile Include="Engine\Samsung\SamsungPackageManager.cs" />
+    <Compile Include="Engine\Info\DeviceInfoReader.cs" />
+    <Compile Include="Engine\Backup\BackupEngine.cs" />
+    <Compile Include="Engine\Backup\RestoreEngine.cs" />
+    <Compile Include="Engine\Network\NetworkStore.cs" />
+    <Compile Include="Engine\Network\MccMncDatabase.cs" />
+    <Compile Include="Engine\Logging\ILogger.cs" />
+    <Compile Include="Engine\Logging\ConsoleLogger.cs" />
+    <Compile Include="Engine\Logging\WinFormsLogger.cs" />
+    <Compile Include="Engine\Models\Enums.cs" />
+    <Compile Include="Engine\Models\DeviceModels.cs" />
+    <Compile Include="Engine\UniversalBypassEngine.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Data\mcc_mnc.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="packages.config" />
+  </ItemGroup>
+  <ItemGroup />
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>
