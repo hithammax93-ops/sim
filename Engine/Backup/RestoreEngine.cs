@@ -116,14 +116,20 @@ namespace HmaxUnlocker.Engine.Backup
                     }
                 }
 
-                // إعادة تشغيل RIL لتطبيق الملفات المستعادة
+                // إعادة تشغيل RIL لتطبيق الملفات المستعادة؛ فشله يجعل النتيجة جزئية لا ناجحة بالكامل.
+                bool rilRestartFailed = false;
                 if (result.RestoredFiles.Count > 0)
                 {
                     _logger.Info("[Restore] Restarting RIL services...");
-                    await new SimStateController(_adb, _logger).RestartRilAsync();
+                    bool restarted = await new SimStateController(_adb, _logger).RestartRilAsync();
+                    if (!restarted)
+                    {
+                        rilRestartFailed = true;
+                        result.Errors.Add("Files were restored, but RIL restart could not be verified. Reboot is required.");
+                    }
                 }
 
-                result.Result = result.FailedFiles.Count == 0
+                result.Result = result.FailedFiles.Count == 0 && !rilRestartFailed
                     ? PatchResult.Success
                     : (result.RestoredFiles.Count > 0 ? PatchResult.PartialSuccess : PatchResult.Failed);
             }

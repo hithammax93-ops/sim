@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -37,12 +37,9 @@ namespace HmaxUnlocker.Engine.Efs
 
             if (simState.Contains("LOADED") || simState.Contains("READY"))
             {
-                string bypassProp = await _adb.ExecuteAsync("getprop persist.sys.hmax.bypassed");
-                if (!string.IsNullOrWhiteSpace(bypassProp) && bypassProp.Trim() == "1")
-                {
-                    return LockStatus.RelockBypassed;
-                }
-                return LockStatus.OfficiallyUnlocked;
+                // جاهزية الشريحة لا تثبت فتح قفل الشبكة؛ لا نستخدم خاصية أنشأها البرنامج
+                // نفسه كدليل على نجاح الفتح.
+                _logger?.Debug("[SimState] SIM is ready, but network unlock cannot be inferred from this state.");
             }
 
             return LockStatus.Unknown;
@@ -105,52 +102,54 @@ namespace HmaxUnlocker.Engine.Efs
         /// ← start ← التحقق أن الحالة عادت running. مع بديل ctl.stop/ctl.start
         /// إن لم توجد أدوات stop/start. كل خطوة تُسجَّل بصدق.
         /// </summary>
-        public async Task RestartRilAsync()
+        public async Task<bool> RestartRilAsync()
         {
             _logger?.Info("[RIL] Detecting RIL services (init.svc.*)...");
             var services = await GetRilServicesWithStateAsync();
+            var runningServices = services.Where(s => s.Value == "running").ToList();
 
-            if (services.Count == 0)
+            if (runningServices.Count == 0)
             {
-                _logger?.Warn("[RIL] No init.svc.* RIL services found — falling back to 'ril-daemon'");
-                services.Add(new KeyValuePair<string, string>("ril-daemon", "running"));
+                _logger?.Warn("[RIL] No running RIL service was identified; restart was not attempted.");
+                return false;
             }
 
-            foreach (var svc in services)
+            bool allVerified = true;
+            foreach (var svc in runningServices)
             {
                 string name = svc.Key;
-
-                if (svc.Value != "running")
-                {
-                    _logger?.Info($"[RIL] Skipping {name} (state is '{svc.Value}', not running)");
-                    continue;
-                }
-
                 _logger?.Info($"[RIL] Restarting service: {name}");
 
-                // stop (مع بديل ctl.stop إن لم توجد الأداة)
                 await _adb.ExecuteRootAsync(
                     $"stop {name} 2>/dev/null || setprop ctl.stop {name}");
                 await Task.Delay(1000);
 
                 string afterStop = (await _adb.ExecuteAsync($"getprop init.svc.{name}")).Trim();
                 bool stopped = afterStop.Equals("stopped", StringComparison.OrdinalIgnoreCase);
-                _logger?.Info($"[RIL]   {name} after stop: '{afterStop}' {(stopped ? "(stopped OK)" : "(stop NOT confirmed — may be denied by SELinux or service crashed)")}");
+                if (!stopped) allVerified = false;
+                _logger?.Info($"[RIL]   {name} after stop: '{afterStop}' {(stopped ? "(stopped OK)" : "(stop NOT confirmed)")}");
 
-                // start (مع بديل ctl.start)
+                // حاول إعادة التشغيل حتى عند تعذر تأكيد التوقف لتجنب ترك الخدمة متوقفة.
                 await _adb.ExecuteRootAsync(
                     $"start {name} 2>/dev/null || setprop ctl.start {name}");
                 await Task.Delay(500);
 
                 string afterStart = (await _adb.ExecuteAsync($"getprop init.svc.{name}")).Trim();
                 bool running = afterStart.Equals("running", StringComparison.OrdinalIgnoreCase);
+                if (!running) allVerified = false;
                 _logger?.Info($"[RIL]   {name} after start: '{afterStart}' {(running ? "(running OK)" : "(NOT running — check logcat radio)")}");
             }
+
+            return allVerified;
         }
 
         public async Task<bool> RestartRilAndVerifyLoadedAsync(int timeoutSeconds = 15)
         {
-            await RestartRilAsync();
+            if (timeoutSeconds <= 0)
+                throw new ArgumentOutOfRangeException(nameof(timeoutSeconds));
+
+            if (!await RestartRilAsync())
+                return false;
 
             int elapsed = 0;
             while (elapsed < timeoutSeconds)
