@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
 using HmaxUnlocker.Engine.Communication;
@@ -21,12 +23,17 @@ namespace HmaxUnlocker.Engine.Strategies
         {
             try
             {
+                if (paths == null) throw new ArgumentNullException(nameof(paths));
+                targetCsc = NormalizeCsc(targetCsc);
+
                 var modifier = new EfsFileModifier();
                 bool anyFailure = false;
+                int attemptedOperations = 0;
 
                 // Step 1: Clear QCNv_data.bin (وأيضاً ملف md5 المرافق — بقاءه يسبب كشف التلاعب)
                 if (!string.IsNullOrEmpty(paths.QcnvDataPath))
                 {
+                    attemptedOperations++;
                     logger.Info($"  [Step 1/5] Clearing NV: {paths.QcnvDataPath}");
                     bool nvOk = await _adb.WriteFileAsync(paths.QcnvDataPath, Array.Empty<byte>());
                     logger.Info($"  [Step 1/5] NV cleared: {(nvOk ? "OK" : "FAILED")}");
@@ -48,6 +55,7 @@ namespace HmaxUnlocker.Engine.Strategies
                 // Step 2: Patch MPS code (كود CSC في mps_code.dat)
                 if (!string.IsNullOrEmpty(paths.MpsCodePath))
                 {
+                    attemptedOperations++;
                     logger.Info($"  [Step 2/5] Writing MPS='{targetCsc}' → {paths.MpsCodePath}");
                     bool mpsOk = await _adb.WriteFileAsync(paths.MpsCodePath, modifier.BuildMpsCodeContent(targetCsc));
                     logger.Info($"  [Step 2/5] MPS written: {(mpsOk ? "OK" : "FAILED")}");
@@ -61,6 +69,7 @@ namespace HmaxUnlocker.Engine.Strategies
                 // Step 3: Suppress SIM lock notification
                 if (!string.IsNullOrEmpty(paths.PnPath))
                 {
+                    attemptedOperations++;
                     logger.Info($"  [Step 3/5] Writing pn=0 → {paths.PnPath}");
                     bool pnOk = await _adb.WriteFileAsync(paths.PnPath, "0");
                     logger.Info($"  [Step 3/5] PN written: {(pnOk ? "OK" : "FAILED")}");
@@ -74,6 +83,7 @@ namespace HmaxUnlocker.Engine.Strategies
                 // Step 4: telephony.prop — دمج لا استبدال (المحتوى الأصلي محفوظ)
                 if (!string.IsNullOrEmpty(paths.TelephonyPropPath))
                 {
+                    attemptedOperations++;
                     logger.Info($"  [Step 4/5] Merging telephony.prop → {paths.TelephonyPropPath}");
                     bool telOk = await MergePropFileAsync(
                         paths.TelephonyPropPath, modifier.BuildTelephonyProps(),
@@ -89,6 +99,7 @@ namespace HmaxUnlocker.Engine.Strategies
                 // Step 5: factory.prop — دمج خصائص CSC (تُقرأ عند الإقلاع)
                 if (!string.IsNullOrEmpty(paths.FactoryPropPath))
                 {
+                    attemptedOperations++;
                     logger.Info($"  [Step 5/5] Merging factory.prop (CSC={targetCsc}) → {paths.FactoryPropPath}");
                     bool facOk = await MergePropFileAsync(
                         paths.FactoryPropPath, modifier.BuildCscProps(targetCsc, null),
@@ -101,9 +112,20 @@ namespace HmaxUnlocker.Engine.Strategies
                     logger.Warn("  [Step 5/5] Factory prop path not found — skipped");
                 }
 
+                if (attemptedOperations == 0)
+                {
+                    logger.Error("  No supported Qualcomm target files were found; nothing was changed.");
+                    return PatchResult.PathNotFound;
+                }
+
                 // إعادة تشغيل خدمات RIL لتطبيق التغييرات
                 logger.Info("  Restarting RIL services to apply changes...");
-                await new SimStateController(_adb, logger).RestartRilAsync();
+                bool restarted = await new SimStateController(_adb, logger).RestartRilAsync();
+                if (!restarted)
+                {
+                    logger.Warn("  RIL restart could not be verified.");
+                    anyFailure = true;
+                }
 
                 if (anyFailure)
                 {
@@ -128,7 +150,11 @@ namespace HmaxUnlocker.Engine.Strategies
         private async Task<bool> MergePropFileAsync(
             string remotePath, IDictionary<string, string> props, string marker)
         {
+            long originalSize = await _adb.GetFileSizeAsync(remotePath);
             byte[] existing = await _adb.ReadFileAsync(remotePath);
+            if (originalSize > 0 && existing.Length == 0)
+                return false; // فشلت القراءة؛ لا تستبدل ملفاً لم نقرأ محتواه.
+
             string original = existing.Length > 0 ? StripNonPropNoise(Encoding.ASCII.GetString(existing)) : "";
 
             var modifier = new EfsFileModifier();
@@ -173,16 +199,20 @@ namespace HmaxUnlocker.Engine.Strategies
                 logger.Info("  [Detect 4/4] Reading pn file...");
                 string pnValue = await ReadStringFileAsync(paths.PnPath);
                 logger.Info($"  [Detect 4/4] PN = '{pnValue}'");
-                // Decision matrix
-                bool carrierMismatch = !string.IsNullOrEmpty(originalCarrier)
-                                    && !string.IsNullOrEmpty(currentCsc)
-                                    && originalCarrier != currentCsc;
+                var simStatus = await new SimStateController(_adb, logger).EvaluateLockStatusFromSimAsync();
+                if (simStatus == LockStatus.FactoryLocked)
+                    return simStatus;
+
+                bool hasCarrierPair = !string.IsNullOrEmpty(originalCarrier)
+                                   && !string.IsNullOrEmpty(currentCsc);
+                bool carrierMismatch = hasCarrierPair && originalCarrier != currentCsc;
                 bool nvCleared = qcnvSize == 0;
-                logger.Info($"  [Detect] Carrier mismatch: {carrierMismatch}, NV cleared: {nvCleared}");
-                if (carrierMismatch && nvCleared) return LockStatus.RelockBypassed;
-                if (!carrierMismatch && !nvCleared) return LockStatus.FactoryLocked;
-                if (!carrierMismatch && nvCleared) return LockStatus.OfficiallyUnlocked;
-                if (carrierMismatch && !nvCleared) return LockStatus.FactoryLocked;
+                logger.Info($"  [Detect] Carrier mismatch: {carrierMismatch}, NV cleared: {nvCleared}, PN='{pnValue}'");
+
+                // هذه مؤشرات على تعديل سابق وليست دليلاً على فتح رسمي من المشغّل.
+                if (carrierMismatch && (nvCleared || pnValue == "0"))
+                    return LockStatus.RelockBypassed;
+
                 return LockStatus.Unknown;
             }
             catch (Exception ex)
@@ -194,7 +224,7 @@ namespace HmaxUnlocker.Engine.Strategies
 
         public async Task<byte[]> BackupNvAsync(EfsPaths paths, ILogger logger)
         {
-            if (!string.IsNullOrEmpty(paths.QcnvDataPath))
+            if (paths != null && !string.IsNullOrEmpty(paths.QcnvDataPath))
             {
                 logger.Info($"  Backing up NV: {paths.QcnvDataPath}");
                 return await _adb.ReadFileAsync(paths.QcnvDataPath);
@@ -204,15 +234,49 @@ namespace HmaxUnlocker.Engine.Strategies
 
         public async Task<bool> RestoreNvAsync(EfsPaths paths, byte[] backup, ILogger logger)
         {
-            if (!string.IsNullOrEmpty(paths.QcnvDataPath) && backup.Length > 0)
+            if (paths == null || string.IsNullOrEmpty(paths.QcnvDataPath) || backup == null || backup.Length == 0)
+                return false;
+
+            logger.Info($"  Restoring NV: {paths.QcnvDataPath}");
+            bool ok = await _adb.WriteFileAsync(paths.QcnvDataPath, backup);
+            if (!ok)
             {
-                logger.Info($"  Restoring NV: {paths.QcnvDataPath}");
-                bool ok = await _adb.WriteFileAsync(paths.QcnvDataPath, backup);
-                // استعادة ملف md5 أيضاً إن وُجد ضمن البيانات لا يمكن، لذا نتركه ممسوحاً
-                logger.Info($"  Restore NV: {(ok ? "OK" : "FAILED")}");
-                return ok;
+                logger.Error("  Restore NV: FAILED");
+                return false;
             }
-            return false;
+
+            string md5Path = paths.QcnvDataPath + ".md5";
+            if (await _adb.FileExistsAsync(md5Path))
+            {
+                bool md5Ok = await _adb.WriteFileAsync(md5Path, Md5Hex(backup));
+                if (!md5Ok)
+                {
+                    logger.Error("  NV was restored, but updating its MD5 companion failed.");
+                    return false;
+                }
+            }
+
+            logger.Info("  Restore NV: OK");
+            return true;
+        }
+
+        private static string NormalizeCsc(string targetCsc)
+        {
+            string csc = (targetCsc ?? "").Trim().ToUpperInvariant();
+            if (csc.Length != 3 || csc.Any(c => c < 'A' || c > 'Z'))
+                throw new ArgumentException("CSC must contain exactly three letters.", nameof(targetCsc));
+            return csc;
+        }
+
+        private static string Md5Hex(byte[] data)
+        {
+            using (var md5 = MD5.Create())
+            {
+                var hash = md5.ComputeHash(data);
+                var text = new StringBuilder(hash.Length * 2);
+                foreach (byte b in hash) text.Append(b.ToString("x2"));
+                return text.ToString();
+            }
         }
 
         private async Task<string> ReadStringFileAsync(string path)
