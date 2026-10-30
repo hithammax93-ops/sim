@@ -11,13 +11,12 @@ namespace HmaxUnlocker.Engine.Strategies
             switch (chipset)
             {
                 case ChipsetType.Qualcomm:
-                case ChipsetType.GoogleTensor:
                     return new QualcommStrategy(adb);
                 case ChipsetType.Exynos:
                     return new ExynosStrategy(adb);
                 case ChipsetType.MediaTek:
-                case ChipsetType.Unisoc:
                     return new MediaTekStrategy(adb);
+                // لا نعيد استخدام استراتيجية منصة أخرى لمنصات لم تُختبر؛ ذلك يعطي دعماً وهمياً.
                 default:
                     throw new NotSupportedException($"Chipset '{chipset}' is not yet supported.");
             }

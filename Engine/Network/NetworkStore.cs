@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using HmaxUnlocker.Engine.Models;
 
@@ -11,13 +12,17 @@ namespace HmaxUnlocker.Engine.Network
 
         public void AddNetwork(NetworkEntry entry)
         {
+            if (entry == null)
+                throw new ArgumentNullException(nameof(entry));
+
             if (!_selectedNetworks.Contains(entry))
                 _selectedNetworks.Add(entry);
         }
 
         public void RemoveNetwork(NetworkEntry entry)
         {
-            _selectedNetworks.Remove(entry);
+            if (entry != null)
+                _selectedNetworks.Remove(entry);
         }
 
         public void Clear()
@@ -25,7 +30,6 @@ namespace HmaxUnlocker.Engine.Network
             _selectedNetworks.Clear();
         }
 
-        // توفير الاسمين معاً لتجنب أي خطأ في التطابق
         public string GetSelectedSummary()
         {
             return GetSummary();

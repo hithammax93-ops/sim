@@ -91,8 +91,9 @@ namespace HmaxUnlocker.Engine.Detection
             var paths = new EfsPaths();
 
             paths.EfsRoot = await FindFirstExistingDirAsync(EFS_ROOT_CANDIDATES);
-            if (!string.IsNullOrEmpty(paths.EfsRoot))
-                paths.VendorEfsRoot = paths.EfsRoot.Contains("/vendor") ? paths.EfsRoot : "/mnt/vendor/efs";
+            paths.VendorEfsRoot = await FindFirstExistingDirAsync(new[] {
+                "/mnt/vendor/efs", "/data/vendor/efs", "/vendor/efs"
+            });
 
             paths.MpsCodePath       = await FindFirstExistingFileAsync(MPS_CANDIDATES);
             paths.CidDatPath        = await FindFirstExistingFileAsync(CID_CANDIDATES);
