@@ -1,0 +1,250 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Security.Cryptography;
+using System.Text;
+using System.Threading.Tasks;
+using HmaxUnlocker.Engine.Communication;
+using HmaxUnlocker.Engine.Logging;
+using HmaxUnlocker.Engine.Models;
+
+namespace HmaxUnlocker.Engine.Backup
+{
+    /// <summary>
+    /// نسخ احتياطي حقيقي بنفس مسارات وأسماء الملفات على الجهاز:
+    /// /efs/imei/cid.dat يُنسخ إلى BackupDir/efs/imei/cid.dat —
+    /// وهكذا يمكن استرجاع أي نسخة إلى مساراتها الأصلية مباشرة (زر Restore).
+    /// يُحسب MD5 لكل ملف ويدوَّن في الـ manifest، مع فحص تكامل QCNv مقابل ملف md5.
+    /// </summary>
+    public class BackupEngine
+    {
+        private readonly IAdbShell _adb;
+        private readonly ILogger _logger;
+
+        private static readonly string[] EFS_PATHS_TO_BACKUP = {
+            "/efs/imei/cid.dat",
+            "/efs/imei/mps_code.dat",
+            "/efs/imei/prodcode.dat",
+            "/efs/sec_efs/pn",
+            "/efs/sec_efs/SVC",
+            "/efs/sec_efs/SettingsBackup.json",
+            "/mnt/vendor/efs/mps_code.dat",
+            "/mnt/vendor/efs/QCNv_data.bin",
+            "/mnt/vendor/efs/QCNv_data.bin.md5",
+            "/mnt/vendor/efs/telephony.prop",
+            "/mnt/vendor/efs/factory.prop",
+            "/mnt/vendor/efs/wv.keys",
+            // nv_data.bin لمنصات Exynos (يقابل QCNv في Qualcomm)
+            "/efs/nv_data.bin",
+            "/efs/nv_data.bin.md5",
+        };
+
+        public BackupEngine(IAdbShell adb, ILogger logger)
+        {
+            _adb = adb;
+            _logger = logger;
+        }
+
+        public async Task<string> ExecuteAsync(string baseBackupPath)
+        {
+            string deviceModel = Clean(await _adb.ExecuteAsync("getprop ro.product.model"));
+            string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+            string backupDir = Path.Combine(baseBackupPath, $"{deviceModel}_{timestamp}");
+
+            Directory.CreateDirectory(backupDir);
+            _logger.Info($"Backup directory: {backupDir}");
+            _logger.Info("Backup uses the SAME paths and file names as on the phone " +
+                         "(efs/imei/cid.dat, mnt/vendor/efs/...) so it can be restored directly.");
+
+            var manifest = new List<string>();
+            int successCount = 0;
+            int failCount = 0;
+
+            // Backup individual EFS files (mirrored paths)
+            foreach (var remotePath in EFS_PATHS_TO_BACKUP)
+            {
+                if (!await _adb.FileExistsAsync(remotePath))
+                {
+                    _logger.Debug($"  Skip (not found): {remotePath}");
+                    continue;
+                }
+
+                string localPath;
+                try
+                {
+                    localPath = MirrorLocalPath(backupDir, remotePath);
+                }
+                catch (Exception)
+                {
+                    _logger.Error($"  Skip (unsafe path): {remotePath}");
+                    continue;
+                }
+
+                try
+                {
+                    bool ok = await _adb.PullFileAsync(remotePath, localPath);
+                    long size = File.Exists(localPath) ? new FileInfo(localPath).Length : 0;
+
+                    if (ok && size > 0)
+                    {
+                        string md5 = Md5Hex(File.ReadAllBytes(localPath));
+                        manifest.Add($"{remotePath} -> {localPath} ({size} bytes, md5 {md5})");
+                        _logger.Info($"  Backed up: {remotePath} ({size} bytes)");
+                        successCount++;
+                    }
+                    else
+                    {
+                        // قراءة فارغة = فشل فعلي (الملف موجود لكن لم يُسحب)
+                        manifest.Add($"{remotePath} -> FAILED (empty/failed pull)");
+                        _logger.Error($"  Failed: {remotePath} - pull returned 0 bytes");
+                        failCount++;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error($"  Failed: {remotePath} - {ex.Message}");
+                    failCount++;
+                }
+            }
+
+            // Backup IMS NV files (mirrored under efs/sec_efs/)
+            string imsPath = "/efs/sec_efs";
+            if (await _adb.DirectoryExistsAsync(imsPath))
+            {
+                var files = await _adb.ListDirectoryAsync(imsPath);
+                foreach (var file in files)
+                {
+                    if (!file.StartsWith("ims_nv_"))
+                        continue;
+
+                    string fullRemote = $"{imsPath}/{file}";
+                    string localFile;
+                    try
+                    {
+                        localFile = MirrorLocalPath(backupDir, fullRemote);
+                    }
+                    catch (Exception)
+                    {
+                        continue;
+                    }
+
+                    bool ok = await _adb.PullFileAsync(fullRemote, localFile);
+                    long size = File.Exists(localFile) ? new FileInfo(localFile).Length : 0;
+                    if (ok && size > 0)
+                    {
+                        string md5 = Md5Hex(File.ReadAllBytes(localFile));
+                        manifest.Add($"{fullRemote} -> {localFile} ({size} bytes, md5 {md5})");
+                        _logger.Info($"  Backed up: {fullRemote} ({size} bytes)");
+                        successCount++;
+                    }
+                    else
+                    {
+                        manifest.Add($"{fullRemote} -> FAILED");
+                        _logger.Error($"  Failed: {fullRemote}");
+                        failCount++;
+                    }
+                }
+            }
+
+            // فحص تكامل QCNv: مطابقة MD5 المحسوب مع محتوى ملف .md5 المسحوب من الجهاز
+            CheckQcnvIntegrity(backupDir, "/mnt/vendor/efs/QCNv_data.bin");
+
+            // Write manifest
+            string manifestPath = Path.Combine(backupDir, "backup_manifest.txt");
+            var manifestContent = new StringBuilder();
+            manifestContent.AppendLine("HMAX UNLOCKER PRO - Backup Manifest (mirrored device paths)");
+            manifestContent.AppendLine($"Date: {DateTime.Now}");
+            manifestContent.AppendLine($"Device: {deviceModel}");
+            manifestContent.AppendLine($"Files backed up: {successCount}");
+            manifestContent.AppendLine($"Files failed: {failCount}");
+            manifestContent.AppendLine("─────────────────────────────────────");
+            foreach (var entry in manifest)
+                manifestContent.AppendLine(entry);
+            File.WriteAllText(manifestPath, manifestContent.ToString());
+
+            // Write device info
+            string infoPath = Path.Combine(backupDir, "device_info.txt");
+            var infoContent = new StringBuilder();
+            infoContent.AppendLine("Device Information");
+            infoContent.AppendLine($"Model: {deviceModel}");
+            infoContent.AppendLine($"Manufacturer: {Clean(await _adb.ExecuteAsync("getprop ro.product.manufacturer"))}");
+            infoContent.AppendLine($"Android: {Clean(await _adb.ExecuteAsync("getprop ro.build.version.release"))}");
+            infoContent.AppendLine($"Baseband: {Clean(await _adb.ExecuteAsync("getprop gsm.version.baseband"))}");
+            infoContent.AppendLine($"PDA: {Clean(await _adb.ExecuteAsync("getprop ro.build.display.id"))}");
+            infoContent.AppendLine($"Date: {DateTime.Now}");
+            File.WriteAllText(infoPath, infoContent.ToString());
+
+            _logger.Info($"Backup complete: {successCount} files, {failCount} failed");
+            _logger.Info($"Saved to: {backupDir}");
+            return backupDir;
+        }
+
+        /// <summary>
+        /// يحوّل مسار الجهاز إلى مسار محلي معكوس بنفس البنية:
+        /// "/efs/imei/cid.dat" → "backupDir/efs/imei/cid.dat"
+        /// </summary>
+        public static string MirrorLocalPath(string backupDir, string remotePath)
+        {
+            string rel = remotePath.TrimStart('/', '\\');
+            string[] parts = rel.Split('/', '\\');
+
+            foreach (var part in parts)
+            {
+                if (part == ".." || part.Length == 0)
+                    throw new ArgumentException("Unsafe remote path: " + remotePath);
+            }
+
+            string local = backupDir;
+            foreach (var part in parts)
+                local = Path.Combine(local, part);
+            return local;
+        }
+
+        /// <summary>
+        /// يقارن MD5 المحسوب محلياً لملف QCNv مع محتوى ملف .md5 المسحوب من الجهاز —
+        /// عدم التطابق يعني أن الجهاز سيرفض NV ويعيد بناءها (أو يظهر NV data corrupted).
+        /// </summary>
+        private void CheckQcnvIntegrity(string backupDir, string qcnvRemotePath)
+        {
+            try
+            {
+                string binLocal = MirrorLocalPath(backupDir, qcnvRemotePath);
+                string md5Local = binLocal + ".md5";
+
+                if (!File.Exists(binLocal) || !File.Exists(md5Local))
+                    return;
+
+                string expected = File.ReadAllText(md5Local).Trim().ToLowerInvariant();
+                string actual = Md5Hex(File.ReadAllBytes(binLocal));
+
+                if (expected == actual)
+                {
+                    _logger.Info($"  QCNv integrity: MD5 MATCHES the device .md5 file (NV is self-consistent)");
+                }
+                else
+                {
+                    _logger.Warn($"  QCNv integrity: MD5 MISMATCH (device md5 says {expected}, file is {actual}) — " +
+                                 "the modem will likely rebuild NV on next boot. This is expected AFTER a QCNv reset.");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug($"  QCNv integrity check skipped: {ex.Message}");
+            }
+        }
+
+        private static string Md5Hex(byte[] data)
+        {
+            using (var md5 = MD5.Create())
+            {
+                byte[] hash = md5.ComputeHash(data);
+                var sb = new StringBuilder(hash.Length * 2);
+                foreach (byte b in hash)
+                    sb.Append(b.ToString("x2"));
+                return sb.ToString();
+            }
+        }
+
+        private string Clean(string s) => s?.Trim().Replace("\r", "").Replace("\n", "") ?? "";
+    }
+}
