@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using HmaxUnlocker.Engine.Communication;
@@ -37,6 +38,8 @@ namespace HmaxUnlocker.Engine.Efs
 
             try
             {
+                targetCsc = NormalizeCsc(targetCsc);
+
                 // 0. فحوص مسبقة حقيقية
                 _logger?.Info("[BMI] Step 0/5: Pre-flight checks...");
                 if (!await _adb.IsDeviceConnectedAsync())
@@ -70,9 +73,7 @@ namespace HmaxUnlocker.Engine.Efs
                     return report;
                 }
 
-                string whitelist = selectedMccMnc != null && selectedMccMnc.Count > 0
-                    ? string.Join(",", selectedMccMnc)
-                    : "";
+                string whitelist = NormalizeWhitelist(selectedMccMnc);
 
                 // 1. نسخ احتياطي حقيقي عبر adb pull
                 _logger?.Info("[BMI] Step 1/5: Backing up EFS files (real adb pull)...");
@@ -115,6 +116,13 @@ namespace HmaxUnlocker.Engine.Efs
                 WriteBackupManifest(backupDir, manifestLines, backed, failed);
                 report.ActionsPerformed.Add($"Backup: {backed} files pulled to {backupDir} ({failed} failed)");
                 _logger?.Info($"[BMI] Backup done: {backed} ok, {failed} failed");
+                if (failed > 0 || backed == 0)
+                {
+                    report.Result = PatchResult.Failed;
+                    report.Errors.Add("Backup was incomplete; no device files were modified.");
+                    _logger?.Error("[BMI] Incomplete backup — modification aborted for safety.");
+                    return report;
+                }
 
                 // 2. التعديل محلياً على النسخ المسحوبة (مع الحفاظ على المحتوى الأصلي)
                 _logger?.Info("[BMI] Step 2/5: Modifying carrier files locally...");
@@ -130,31 +138,42 @@ namespace HmaxUnlocker.Engine.Efs
 
                 // 3. الحقن الفعلي: كتابة عبر push مع المالك/الصلاحيات الأصلية
                 _logger?.Info("[BMI] Step 3/5: Injecting modified files to device...");
-                bool mpsOk = await _adb.WriteFileAsync(report.Paths.MpsCodePath, mpsContent);
-                LogInjection(report, "mps_code.dat", mpsOk);
+                bool allInjectionsOk = await _adb.WriteFileAsync(report.Paths.MpsCodePath, mpsContent);
+                LogInjection(report, "mps_code.dat", allInjectionsOk);
 
                 if (telephonyModified != null)
                 {
                     bool telOk = await WriteModifiedPropFileAsync(
-                        backupDir, "telephony.prop", report.Paths.TelephonyPropPath, telephonyModified);
+                        backupDir, "telephony.prop", report.Paths.TelephonyPropPath);
                     LogInjection(report, "telephony.prop", telOk);
+                    if (!telOk) allInjectionsOk = false;
                 }
 
                 if (factoryModified != null)
                 {
                     bool facOk = await WriteModifiedPropFileAsync(
-                        backupDir, "factory.prop", report.Paths.FactoryPropPath, factoryModified);
+                        backupDir, "factory.prop", report.Paths.FactoryPropPath);
                     LogInjection(report, "factory.prop", facOk);
+                    if (!facOk) allInjectionsOk = false;
                 }
 
                 // خصائص قابلة للضبط فعلياً وقت التشغيل (لا يمكن ضبط ro.* عبر setprop)
                 _logger?.Info("[BMI] Setting runtime properties (root, verified)...");
-                await SetVerifiedPropAsync("persist.omc.salescode", targetCsc);
-                await SetVerifiedPropAsync("persist.sys.hmax.bypassed", "1");
-                if (!string.IsNullOrEmpty(whitelist))
-                    await SetVerifiedPropAsync("persist.sys.hmax.netlist", whitelist);
+                if (!await SetVerifiedPropAsync("persist.omc.salescode", targetCsc)) allInjectionsOk = false;
+                if (!await SetVerifiedPropAsync("persist.sys.hmax.bypassed", "1")) allInjectionsOk = false;
+                if (!string.IsNullOrEmpty(whitelist)
+                    && !await SetVerifiedPropAsync("persist.sys.hmax.netlist", whitelist))
+                    allInjectionsOk = false;
+
+                if (!allInjectionsOk)
+                {
+                    report.Result = PatchResult.PartialSuccess;
+                    report.Errors.Add("One or more injections failed; additional device changes were skipped.");
+                    return report;
+                }
 
                 // 3.5 حزم سامسونج (تعطيل حقيقي مع تحقق)
+                bool packageStepFailed = false;
                 if (report.Device.IsSamsung)
                 {
                     try
@@ -163,9 +182,16 @@ namespace HmaxUnlocker.Engine.Efs
                         report.PackageResult = await pkgManager.ExecuteBypassAsync();
                         report.ActionsPerformed.Add(
                             $"Disabled {report.PackageResult.DisabledPackages.Count} packages");
+                        if (report.PackageResult.Errors.Count > 0)
+                        {
+                            packageStepFailed = true;
+                            report.Errors.AddRange(report.PackageResult.Errors);
+                        }
                     }
                     catch (Exception ex)
                     {
+                        packageStepFailed = true;
+                        report.Errors.Add("Samsung package bypass failed: " + ex.Message);
                         _logger?.Warn($"[BMI] Samsung package bypass failed: {ex.Message}");
                     }
                 }
@@ -178,17 +204,18 @@ namespace HmaxUnlocker.Engine.Efs
 
                 // 5. نتيجة صادقة
                 _logger?.Info("[BMI] Step 5/5: Finalizing report...");
-                if (isLoaded)
+                if (isLoaded && !packageStepFailed)
                 {
                     report.ActionsPerformed.Add("SIM state verified as LOADED after RIL restart.");
                     report.Result = PatchResult.Success;
                 }
                 else
                 {
-                    report.ActionsPerformed.Add(
-                        "Files injected. SIM did not reach LOADED after RIL restart — " +
-                        "the carrier lock is enforced in modem NV; reboot the device and/or " +
-                        "run the full Relock Bypass (QCNv reset) if the SIM is still NETWORK_LOCKED.");
+                    report.ActionsPerformed.Add(isLoaded
+                        ? "SIM reached LOADED, but one or more Samsung package operations failed."
+                        : "Files injected. SIM did not reach LOADED after RIL restart — " +
+                          "the carrier lock is enforced in modem NV; reboot the device and/or " +
+                          "run the full Relock Bypass (QCNv reset) if the SIM is still NETWORK_LOCKED.");
                     report.Result = PatchResult.PartialSuccess;
                 }
             }
@@ -278,10 +305,10 @@ namespace HmaxUnlocker.Engine.Efs
         }
 
         private async Task<bool> WriteModifiedPropFileAsync(
-            string backupDir, string name, string remotePath, string modifiedContent)
+            string backupDir, string name, string remotePath)
         {
             string modifiedPath = Path.Combine(backupDir, name + ".modified");
-            return await _adb.PushFileAsync(modifiedPath, remotePath);
+            return File.Exists(modifiedPath) && await _adb.PushFileAsync(modifiedPath, remotePath);
         }
 
         private void LogInjection(BypassReport report, string name, bool ok)
@@ -296,6 +323,25 @@ namespace HmaxUnlocker.Engine.Efs
                 report.Errors.Add($"Injection failed: {name}");
                 _logger?.Error($"[BMI]   Injected {name}: FAILED");
             }
+        }
+
+        private static string NormalizeCsc(string targetCsc)
+        {
+            string csc = (targetCsc ?? "").Trim().ToUpperInvariant();
+            if (csc.Length != 3 || csc.Any(c => c < 'A' || c > 'Z'))
+                throw new ArgumentException("CSC must contain exactly three letters.", nameof(targetCsc));
+            return csc;
+        }
+
+        private static string NormalizeWhitelist(List<string> selectedMccMnc)
+        {
+            if (selectedMccMnc == null || selectedMccMnc.Count == 0)
+                return "";
+
+            var codes = selectedMccMnc.Select(c => (c ?? "").Trim()).ToList();
+            if (codes.Any(c => (c.Length != 5 && c.Length != 6) || !c.All(char.IsDigit)))
+                throw new ArgumentException("Each MCC/MNC code must contain five or six digits.", nameof(selectedMccMnc));
+            return string.Join(",", codes);
         }
 
         /// <summary>يضبط خاصية عبر root ثم يتحقق منها بقراءتها فعلياً.</summary>
