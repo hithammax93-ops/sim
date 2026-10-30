@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using HmaxUnlocker.Engine.Communication;
@@ -27,41 +28,71 @@ namespace HmaxUnlocker.Engine.Strategies
         {
             try
             {
+                if (paths == null) throw new ArgumentNullException(nameof(paths));
+                targetCsc = NormalizeCsc(targetCsc);
+
                 bool anyFailure = false;
+                int attemptedOperations = 0;
 
                 if (!string.IsNullOrEmpty(paths.MpsCodePath))
                 {
+                    attemptedOperations++;
                     bool mpsOk = await _adb.WriteFileAsync(paths.MpsCodePath, targetCsc);
                     logger.Info($"MTK: MPS={targetCsc} at {paths.MpsCodePath}: {(mpsOk ? "OK" : "FAILED")}");
                     if (!mpsOk) anyFailure = true;
                 }
 
+                attemptedOperations++;
                 bool atOk = await ExecuteAtCommandsAsync(targetCsc, logger);
+                if (!atOk) anyFailure = true;
 
                 if (!string.IsNullOrEmpty(paths.CarrierConfigPath))
                 {
+                    attemptedOperations++;
                     logger.Info($"MTK: Patching carrier config at {paths.CarrierConfigPath}");
-                    await _adb.ExecuteRootAsync(
-                        $"find {paths.CarrierConfigPath} -name '*.xml' -exec sed -i 's/locked/unlocked/g' {{}} \\;");
+                    string configResult = await _adb.ExecuteRootAsync(
+                        $"find '{paths.CarrierConfigPath}' -name '*.xml' -exec sed -i 's/locked/unlocked/g' {{}} \\; && echo HMAX_CONFIG_OK");
+                    if (!configResult.Contains("HMAX_CONFIG_OK"))
+                    {
+                        logger.Error("MTK: Carrier config patch failed: " + configResult.Trim());
+                        anyFailure = true;
+                    }
                 }
 
                 if (!string.IsNullOrEmpty(paths.TelephonyPropPath))
                 {
+                    attemptedOperations++;
                     var modifier = new EfsFileModifier();
+                    long originalSize = await _adb.GetFileSizeAsync(paths.TelephonyPropPath);
                     byte[] existing = await _adb.ReadFileAsync(paths.TelephonyPropPath);
-                    string original = existing.Length > 0 ? Encoding.ASCII.GetString(existing).Replace("\0", "") : "";
-                    string merged = modifier.UpsertProps(
-                        original, modifier.BuildTelephonyProps(), "# patched by HMAX UNLOCKER PRO");
-                    bool telOk = await _adb.WriteFileAsync(paths.TelephonyPropPath, merged);
-                    logger.Info($"MTK: telephony.prop merged: {(telOk ? "OK" : "FAILED")}");
-                    if (!telOk) anyFailure = true;
+                    if (originalSize > 0 && existing.Length == 0)
+                    {
+                        logger.Error("MTK: Could not read telephony.prop; the original file was not overwritten.");
+                        anyFailure = true;
+                    }
+                    else
+                    {
+                        string original = existing.Length > 0 ? Encoding.ASCII.GetString(existing).Replace("\0", "") : "";
+                        string merged = modifier.UpsertProps(
+                            original, modifier.BuildTelephonyProps(), "# patched by HMAX UNLOCKER PRO");
+                        bool telOk = await _adb.WriteFileAsync(paths.TelephonyPropPath, merged);
+                        logger.Info($"MTK: telephony.prop merged: {(telOk ? "OK" : "FAILED")}");
+                        if (!telOk) anyFailure = true;
+                    }
+                }
+
+                if (attemptedOperations == 1 && !atOk)
+                {
+                    logger.Error("MTK: No supported files or AT channel were available; nothing was changed.");
+                    return PatchResult.PathNotFound;
                 }
 
                 logger.Info("MTK: Restarting RIL services...");
-                await new SimStateController(_adb, logger).RestartRilAsync();
+                bool restarted = await new SimStateController(_adb, logger).RestartRilAsync();
+                if (!restarted) anyFailure = true;
 
                 if (!atOk)
-                    logger.Warn("MTK: AT commands were NOT delivered (no known AT channel on this device)");
+                    logger.Warn("MTK: AT commands were NOT delivered or verified on this device");
 
                 logger.Info(anyFailure
                     ? "MTK bypass completed WITH FAILURES (see log above)"
@@ -77,6 +108,8 @@ namespace HmaxUnlocker.Engine.Strategies
 
         public async Task<LockStatus> DetectStatusAsync(EfsPaths paths, ILogger logger)
         {
+            if (paths == null) return LockStatus.Unknown;
+
             string originalCarrier = "";
             string currentCsc = "";
 
@@ -92,47 +125,75 @@ namespace HmaxUnlocker.Engine.Strategies
                 currentCsc = Encoding.ASCII.GetString(data).Trim().Replace("\0", "");
             }
 
-            string mtkLock = await _adb.ExecuteAsync("getprop persist.mtk_simlock_policy 2>/dev/null");
-            if (mtkLock.Contains("1") || mtkLock.Contains("locked"))
+            var simStatus = await new SimStateController(_adb, logger).EvaluateLockStatusFromSimAsync();
+            if (simStatus == LockStatus.FactoryLocked)
+                return simStatus;
+
+            string mtkLock = (await _adb.ExecuteAsync("getprop persist.mtk_simlock_policy")).Trim();
+            if (mtkLock == "1" || mtkLock.Equals("locked", StringComparison.OrdinalIgnoreCase))
                 return LockStatus.FactoryLocked;
 
-            if (!string.IsNullOrEmpty(originalCarrier) && originalCarrier != currentCsc)
+            if (!string.IsNullOrEmpty(originalCarrier) && !string.IsNullOrEmpty(currentCsc)
+                && originalCarrier != currentCsc)
                 return LockStatus.RelockBypassed;
-
-            if (!string.IsNullOrEmpty(originalCarrier) && originalCarrier == currentCsc)
-                return LockStatus.OfficiallyUnlocked;
 
             return LockStatus.Unknown;
         }
 
         public async Task<byte[]> BackupNvAsync(EfsPaths paths, ILogger logger)
         {
-            if (!string.IsNullOrEmpty(paths.NvramPath))
+            const string archive = "/data/local/tmp/nvram_backup.tar.gz";
+            if (paths == null || string.IsNullOrEmpty(paths.NvramPath))
+                return Array.Empty<byte>();
+
+            try
             {
                 logger.Info($"MTK: Backing up NVRAM from {paths.NvramPath}");
-                await _adb.ExecuteRootAsync($"tar czf /data/local/tmp/nvram_backup.tar.gz {paths.NvramPath}/");
-                return await _adb.ReadFileAsync("/data/local/tmp/nvram_backup.tar.gz");
+                string created = await _adb.ExecuteRootAsync(
+                    $"tar czf {archive} -C / '{paths.NvramPath.TrimStart('/')}' && echo HMAX_NV_BACKUP_OK");
+                if (!created.Contains("HMAX_NV_BACKUP_OK"))
+                {
+                    logger.Error("MTK: NVRAM archive creation failed: " + created.Trim());
+                    return Array.Empty<byte>();
+                }
+                return await _adb.ReadFileAsync(archive);
             }
-            return Array.Empty<byte>();
+            finally
+            {
+                await _adb.ExecuteRootAsync($"rm -f {archive}");
+            }
         }
 
         public async Task<bool> RestoreNvAsync(EfsPaths paths, byte[] backup, ILogger logger)
         {
-            if (backup.Length > 0)
+            const string archive = "/data/local/tmp/nvram_restore.tar.gz";
+            if (backup == null || backup.Length == 0)
+                return false;
+
+            try
             {
                 logger.Info("MTK: Restoring NVRAM...");
-                bool pushed = await _adb.WriteFileAsync("/data/local/tmp/nvram_restore.tar.gz", backup);
-                if (!pushed)
+                if (!await _adb.WriteFileAsync(archive, backup))
                 {
                     logger.Error("MTK: NVRAM restore upload failed");
                     return false;
                 }
-                await _adb.ExecuteRootAsync("cd / && tar xzf /data/local/tmp/nvram_restore.tar.gz");
-                await _adb.ExecuteRootAsync("rm -f /data/local/tmp/nvram_restore.tar.gz");
+
+                string extracted = await _adb.ExecuteRootAsync(
+                    $"cd / && tar xzf {archive} && echo HMAX_NV_RESTORE_OK");
+                if (!extracted.Contains("HMAX_NV_RESTORE_OK"))
+                {
+                    logger.Error("MTK: NVRAM extraction failed: " + extracted.Trim());
+                    return false;
+                }
+
                 logger.Info("MTK: NVRAM restored");
                 return true;
             }
-            return false;
+            finally
+            {
+                await _adb.ExecuteRootAsync($"rm -f {archive}");
+            }
         }
 
         /// <summary>
@@ -170,14 +231,21 @@ namespace HmaxUnlocker.Engine.Strategies
             foreach (var cmd in atCommands)
             {
                 string result = await _adb.ExecuteRootAsync(
-                    $"echo -e '{cmd}\\r' > {channel} 2>&1");
-                bool delivered = string.IsNullOrWhiteSpace(result)
-                                 || (!result.Contains("Permission denied") && !result.Contains("No such"));
-                logger.Info($"MTK AT: {cmd} → {(delivered ? "sent (unverified response)" : "FAILED: " + result.Trim())}");
+                    $"printf '%s\\r' '{cmd}' > {channel} && echo HMAX_AT_SENT");
+                bool delivered = result.Contains("HMAX_AT_SENT");
+                logger.Info($"MTK AT: {cmd} → {(delivered ? "write completed (modem response unverified)" : "FAILED: " + result.Trim())}");
                 if (!delivered) return false;
             }
 
             return true;
+        }
+
+        private static string NormalizeCsc(string targetCsc)
+        {
+            string csc = (targetCsc ?? "").Trim().ToUpperInvariant();
+            if (csc.Length != 3 || csc.Any(c => c < 'A' || c > 'Z'))
+                throw new ArgumentException("CSC must contain exactly three letters.", nameof(targetCsc));
+            return csc;
         }
     }
 }
