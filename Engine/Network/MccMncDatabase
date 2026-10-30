@@ -1,0 +1,151 @@
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using HmaxUnlocker.Engine.Models;
+using Newtonsoft.Json;
+
+namespace HmaxUnlocker.Engine.Network
+{
+    public class MccMncDatabase
+    {
+        private List<NetworkEntry> _allNetworks;
+
+        public MccMncDatabase()
+        {
+            _allNetworks = LoadNetworks();
+        }
+
+        public void LoadFromFile(string path)
+        {
+            try
+            {
+                if (File.Exists(path))
+                {
+                    string json = File.ReadAllText(path);
+                    var loaded = JsonConvert.DeserializeObject<List<NetworkEntry>>(json);
+                    if (loaded != null && loaded.Count > 0)
+                        _allNetworks = loaded;
+                }
+            }
+            catch
+            {
+                // Fallback to built-in networks
+            }
+        }
+
+        public List<string> GetCountries()
+        {
+            return _allNetworks.Select(n => n.Country).Distinct().OrderBy(c => c).ToList();
+        }
+
+        public List<NetworkEntry> GetNetworksByCountry(string country)
+        {
+            return _allNetworks.Where(n => n.Country == country).OrderBy(n => n.Operator).ToList();
+        }
+
+        public List<NetworkEntry> GetAllNetworks()
+        {
+            return _allNetworks;
+        }
+
+        private List<NetworkEntry> LoadNetworks()
+        {
+            // Try loading from JSON file first
+            string jsonPath = Path.Combine(
+                Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location),
+                "Data", "mcc_mnc.json");
+
+            if (File.Exists(jsonPath))
+            {
+                string json = File.ReadAllText(jsonPath);
+                var loaded = JsonConvert.DeserializeObject<List<NetworkEntry>>(json);
+                if (loaded != null && loaded.Count > 0)
+                    return loaded;
+            }
+
+            // Fallback to built-in data
+            return GetBuiltInNetworks();
+        }
+
+        private List<NetworkEntry> GetBuiltInNetworks()
+        {
+            var networks = new List<NetworkEntry>();
+
+            // Yemen (FIRST)
+            networks.Add(new NetworkEntry { Country = "Yemen", Mcc = "421", Mnc = "01", Operator = "Yemen Mobile" });
+            networks.Add(new NetworkEntry { Country = "Yemen", Mcc = "421", Mnc = "02", Operator = "Sabafon" });
+            networks.Add(new NetworkEntry { Country = "Yemen", Mcc = "421", Mnc = "03", Operator = "Yemeni Omani United" });
+            networks.Add(new NetworkEntry { Country = "Yemen", Mcc = "421", Mnc = "04", Operator = "HiTS-UNITEL" });
+
+            // Saudi Arabia
+            networks.Add(new NetworkEntry { Country = "Saudi Arabia", Mcc = "420", Mnc = "01", Operator = "Al Jawal (STC)" });
+            networks.Add(new NetworkEntry { Country = "Saudi Arabia", Mcc = "420", Mnc = "03", Operator = "Mobily" });
+            networks.Add(new NetworkEntry { Country = "Saudi Arabia", Mcc = "420", Mnc = "04", Operator = "Zain KSA" });
+
+            // UAE
+            networks.Add(new NetworkEntry { Country = "UAE", Mcc = "424", Mnc = "02", Operator = "Etisalat" });
+            networks.Add(new NetworkEntry { Country = "UAE", Mcc = "424", Mnc = "03", Operator = "du" });
+
+            // Kuwait
+            networks.Add(new NetworkEntry { Country = "Kuwait", Mcc = "419", Mnc = "02", Operator = "Zain KW" });
+            networks.Add(new NetworkEntry { Country = "Kuwait", Mcc = "419", Mnc = "03", Operator = "Ooredoo KW" });
+            networks.Add(new NetworkEntry { Country = "Kuwait", Mcc = "419", Mnc = "04", Operator = "STC KW" });
+
+            // Qatar
+            networks.Add(new NetworkEntry { Country = "Qatar", Mcc = "427", Mnc = "01", Operator = "Ooredoo QA" });
+            networks.Add(new NetworkEntry { Country = "Qatar", Mcc = "427", Mnc = "02", Operator = "Vodafone QA" });
+
+            // Bahrain
+            networks.Add(new NetworkEntry { Country = "Bahrain", Mcc = "426", Mnc = "01", Operator = "Batelco" });
+            networks.Add(new NetworkEntry { Country = "Bahrain", Mcc = "426", Mnc = "02", Operator = "Zain BH" });
+            networks.Add(new NetworkEntry { Country = "Bahrain", Mcc = "426", Mnc = "04", Operator = "Viva BH" });
+
+            // Oman
+            networks.Add(new NetworkEntry { Country = "Oman", Mcc = "422", Mnc = "02", Operator = "Omantel" });
+            networks.Add(new NetworkEntry { Country = "Oman", Mcc = "422", Mnc = "03", Operator = "Ooredoo OM" });
+
+            // Jordan
+            networks.Add(new NetworkEntry { Country = "Jordan", Mcc = "416", Mnc = "01", Operator = "Zain JO" });
+            networks.Add(new NetworkEntry { Country = "Jordan", Mcc = "416", Mnc = "03", Operator = "Umniah" });
+            networks.Add(new NetworkEntry { Country = "Jordan", Mcc = "416", Mnc = "77", Operator = "Orange JO" });
+
+            // Lebanon
+            networks.Add(new NetworkEntry { Country = "Lebanon", Mcc = "415", Mnc = "01", Operator = "Alfa" });
+            networks.Add(new NetworkEntry { Country = "Lebanon", Mcc = "415", Mnc = "03", Operator = "touch" });
+
+            // Iraq
+            networks.Add(new NetworkEntry { Country = "Iraq", Mcc = "418", Mnc = "05", Operator = "AsiaCell" });
+            networks.Add(new NetworkEntry { Country = "Iraq", Mcc = "418", Mnc = "20", Operator = "Zain IQ" });
+            networks.Add(new NetworkEntry { Country = "Iraq", Mcc = "418", Mnc = "30", Operator = "Zain IQ" });
+
+            // Egypt
+            networks.Add(new NetworkEntry { Country = "Egypt", Mcc = "602", Mnc = "01", Operator = "Orange EG" });
+            networks.Add(new NetworkEntry { Country = "Egypt", Mcc = "602", Mnc = "02", Operator = "Vodafone EG" });
+            networks.Add(new NetworkEntry { Country = "Egypt", Mcc = "602", Mnc = "03", Operator = "Etisalat EG" });
+            networks.Add(new NetworkEntry { Country = "Egypt", Mcc = "602", Mnc = "04", Operator = "WE EG" });
+
+            // USA
+            networks.Add(new NetworkEntry { Country = "USA", Mcc = "310", Mnc = "260", Operator = "T-Mobile" });
+            networks.Add(new NetworkEntry { Country = "USA", Mcc = "310", Mnc = "410", Operator = "AT&T" });
+            networks.Add(new NetworkEntry { Country = "USA", Mcc = "311", Mnc = "480", Operator = "Verizon" });
+            networks.Add(new NetworkEntry { Country = "USA", Mcc = "310", Mnc = "120", Operator = "Sprint" });
+
+            // UK
+            networks.Add(new NetworkEntry { Country = "UK", Mcc = "234", Mnc = "10", Operator = "O2" });
+            networks.Add(new NetworkEntry { Country = "UK", Mcc = "234", Mnc = "15", Operator = "Vodafone UK" });
+            networks.Add(new NetworkEntry { Country = "UK", Mcc = "234", Mnc = "20", Operator = "Three UK" });
+
+            // Germany
+            networks.Add(new NetworkEntry { Country = "Germany", Mcc = "262", Mnc = "01", Operator = "Telekom DE" });
+            networks.Add(new NetworkEntry { Country = "Germany", Mcc = "262", Mnc = "02", Operator = "Vodafone DE" });
+            networks.Add(new NetworkEntry { Country = "Germany", Mcc = "262", Mnc = "03", Operator = "O2 DE" });
+
+            // Test codes
+            networks.Add(new NetworkEntry { Country = "Test", Mcc = "001", Mnc = "01", Operator = "Test Network" });
+            networks.Add(new NetworkEntry { Country = "Test", Mcc = "999", Mnc = "99", Operator = "Debug Network" });
+
+            return networks;
+        }
+    }
+}
