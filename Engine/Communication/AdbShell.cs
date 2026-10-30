@@ -24,8 +24,11 @@ namespace HmaxUnlocker.Engine.Communication
 
         public AdbShell(string adbPath = null, string serial = null, int timeoutMs = 30000)
         {
+            if (timeoutMs <= 0)
+                throw new ArgumentOutOfRangeException(nameof(timeoutMs), "Timeout must be greater than zero.");
+
             _adbPath = ResolveAdbPath(adbPath);
-            _serial = serial;
+            _serial = string.IsNullOrWhiteSpace(serial) ? null : serial.Trim();
             _timeoutMs = timeoutMs;
         }
 
@@ -45,8 +48,13 @@ namespace HmaxUnlocker.Engine.Communication
         private string BuildArgs(string args) =>
             string.IsNullOrEmpty(_serial) ? args : $"-s {_serial} {args}";
 
-        // اقتباس مسار للـ shell على الجهاز (المسارات هنا لا تحتوي ')
-        private static string QuoteRemote(string remotePath) => "'" + remotePath + "'";
+        // اقتباس مسار للـ shell على الجهاز مع معالجة علامات الاقتباس المفردة.
+        private static string QuoteRemote(string remotePath)
+        {
+            if (string.IsNullOrWhiteSpace(remotePath))
+                throw new ArgumentException("Remote path cannot be empty.", nameof(remotePath));
+            return "'" + remotePath.Replace("'", "'\\''") + "'";
+        }
 
         public async Task<string> ExecuteAsync(string command)
         {
@@ -147,14 +155,21 @@ namespace HmaxUnlocker.Engine.Communication
 
         public async Task<bool> PullFileAsync(string remotePath, string localPath)
         {
+            string staged = $"/data/local/tmp/.hmax_p_{Guid.NewGuid():N}";
             try
             {
-                string staged = $"/data/local/tmp/.hmax_p_{Guid.NewGuid():N}";
-                await ExecuteRootAsync($"cat {QuoteRemote(remotePath)} > {staged} && chmod 644 {staged}");
+                if (string.IsNullOrWhiteSpace(localPath))
+                    return false;
+
+                string localDirectory = Path.GetDirectoryName(localPath);
+                if (!string.IsNullOrEmpty(localDirectory))
+                    Directory.CreateDirectory(localDirectory);
+
+                await ExecuteRootAsync(
+                    $"cat {QuoteRemote(remotePath)} > {QuoteRemote(staged)} && chmod 644 {QuoteRemote(staged)}");
 
                 var pull = await RunProcessExAsync(_adbPath,
                     BuildArgs($"pull {staged} \"{localPath}\""), TransferTimeoutMs);
-                try { await ExecuteRootAsync($"rm -f {staged}"); } catch { }
 
                 return pull.ExitCode == 0 && File.Exists(localPath);
             }
@@ -165,6 +180,10 @@ namespace HmaxUnlocker.Engine.Communication
             catch
             {
                 return false;
+            }
+            finally
+            {
+                try { await ExecuteRootAsync($"rm -f {QuoteRemote(staged)}"); } catch { }
             }
         }
 
@@ -200,6 +219,7 @@ namespace HmaxUnlocker.Engine.Communication
             try
             {
                 string quoted = QuoteRemote(remotePath);
+                string quotedStaged = QuoteRemote(staged);
 
                 // احتفظ بالمالك/الصلاحيات الحالية إن كان الملف موجوداً
                 string owner = "radio:radio";
@@ -213,17 +233,21 @@ namespace HmaxUnlocker.Engine.Communication
                     mode = m.Groups[3].Value;
                 }
 
+                // لا نعتمد على غياب رسائل الخطأ: النجاح يتطلب علامة لا تظهر إلا بعد اكتمال كل الخطوات.
+                // restorecon اختياري لأن بعض الأجهزة لا توفره، أما الكتابة والمالك والصلاحيات فإلزامية.
                 string result = await ExecuteRootAsync(
-                    $"cat {staged} > {quoted} && chown {owner} {quoted} && chmod {mode} {quoted} && restorecon {quoted}; rm -f {staged}");
+                    $"cat {quotedStaged} > {quoted} && chown {owner} {quoted} && chmod {mode} {quoted} && " +
+                    $"(restorecon {quoted} 2>/dev/null || true) && echo HMAX_WRITE_OK");
 
-                return !result.Contains("Permission denied")
-                    && !result.Contains("No such file or directory")
-                    && !result.Contains("Read-only")
-                    && !result.Contains("not found");
+                return result.Contains("HMAX_WRITE_OK");
             }
             catch
             {
                 return false;
+            }
+            finally
+            {
+                try { await ExecuteRootAsync($"rm -f {QuoteRemote(staged)}"); } catch { }
             }
         }
 
