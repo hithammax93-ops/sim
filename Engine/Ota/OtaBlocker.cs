@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using HmaxUnlocker.Engine.Communication;
 using HmaxUnlocker.Engine.Logging;
@@ -136,7 +137,9 @@ namespace HmaxUnlocker.Engine.Ota
         private async Task<bool> PackageExistsAsync(string packageName)
         {
             string list = await _adb.ExecuteAsync($"pm list packages {packageName}");
-            return list.Contains(packageName);
+            string expected = "package:" + packageName;
+            return list.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Any(line => string.Equals(line.Trim(), expected, StringComparison.Ordinal));
         }
     }
 }

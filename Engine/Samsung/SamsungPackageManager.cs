@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using HmaxUnlocker.Engine.Communication;
@@ -157,7 +158,9 @@ namespace HmaxUnlocker.Engine.Samsung
         private async Task<bool> PackageExistsAsync(string packageName)
         {
             string result = await _adb.ExecuteAsync($"pm list packages {packageName}");
-            return result.Contains(packageName);
+            string expected = "package:" + packageName;
+            return result.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Any(line => string.Equals(line.Trim(), expected, StringComparison.Ordinal));
         }
 
         private static bool ContainsIgnoreCase(string haystack, string needle)
