@@ -5,6 +5,7 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using HmaxUnlocker.Engine.Communication;
 using HmaxUnlocker.Engine.Detection;
+using HmaxUnlocker.Engine.Efs;
 using HmaxUnlocker.Engine.Logging;
 using HmaxUnlocker.Engine.Models;
 
@@ -210,15 +211,21 @@ namespace HmaxUnlocker.Engine.Info
 
         private async Task<LockStatus> DetermineLockStatusAsync(DeviceInfoModel info)
         {
-            if (info.OriginalCarrier == "N/A" || info.CurrentCSC == "N/A")
+            var simStatus = await new SimStateController(_adb, _logger).EvaluateLockStatusFromSimAsync();
+            if (simStatus == LockStatus.FactoryLocked)
+                return simStatus;
+
+            if (info.OriginalCarrier == "N/A" || info.CurrentCSC == "N/A"
+                || info.OriginalCarrier == info.CurrentCSC)
                 return LockStatus.Unknown;
-            if (info.OriginalCarrier == info.CurrentCSC)
-                return LockStatus.OfficiallyUnlocked;
 
             long qcnvSize = await _adb.GetFileSizeAsync("/mnt/vendor/efs/QCNv_data.bin");
+            if (qcnvSize < 0)
+                qcnvSize = await _adb.GetFileSizeAsync("/efs/QCNv_data.bin");
             if (qcnvSize == 0) return LockStatus.RelockBypassed;
 
-            return LockStatus.FactoryLocked;
+            // اختلاف CSC وحده لا يثبت وجود قفل أو فتحه.
+            return LockStatus.Unknown;
         }
 
         private string ParseSimStatus(string simState)
