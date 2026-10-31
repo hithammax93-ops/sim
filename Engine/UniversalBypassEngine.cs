@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using HmaxUnlocker.Engine.Communication;
 using HmaxUnlocker.Engine.Detection;
@@ -28,6 +29,8 @@ namespace HmaxUnlocker.Engine
             var report = new BypassReport();
             try
             {
+                targetCsc = NormalizeCsc(targetCsc);
+
                 // ═══════════════════════════════════════
                 // Phase 1: Pre-flight checks
                 // ═══════════════════════════════════════
@@ -60,11 +63,13 @@ namespace HmaxUnlocker.Engine
                 _logger.Info($"  Device: {report.Device.Brand} {report.Device.Model}");
                 _logger.Info($"  Chipset: {report.Device.Chipset} ({report.Device.BoardPlatform})");
                 _logger.Info($"  Android: {report.Device.AndroidVersion}");
-                if (report.Device.Chipset == ChipsetType.Unknown)
+                if (report.Device.Chipset != ChipsetType.Qualcomm
+                    && report.Device.Chipset != ChipsetType.MediaTek
+                    && report.Device.Chipset != ChipsetType.Exynos)
                 {
                     report.Result = PatchResult.UnsupportedDevice;
-                    report.Errors.Add("Could not identify chipset type");
-                    _logger.Error("  Chipset type unknown — cannot proceed!");
+                    report.Errors.Add($"Chipset '{report.Device.Chipset}' is not supported by a verified strategy");
+                    _logger.Error("  No verified strategy exists for this chipset — cannot proceed.");
                     return report;
                 }
                 _logger.Info("  Device detection: OK");
@@ -118,14 +123,15 @@ namespace HmaxUnlocker.Engine
                 _logger.Info("=== Phase 5: NV safety backup ===");
                 try
                 {
-                    bool nvWillBeCleared = !string.IsNullOrEmpty(report.Paths.QcnvDataPath);
+                    bool nvWillBeCleared = report.Device.Chipset == ChipsetType.Qualcomm
+                        && !string.IsNullOrEmpty(report.Paths.QcnvDataPath);
                     long nvSizeOnDevice = nvWillBeCleared
                         ? await _adb.GetFileSizeAsync(report.Paths.QcnvDataPath)
                         : -1;
 
                     if (!nvWillBeCleared)
                     {
-                        _logger.Info("  QCNv path not found — NV will not be cleared, no NV backup required");
+                        _logger.Info("  This strategy will not clear QCNv — no NV safety copy is required by this step");
                     }
                     else if (nvSizeOnDevice == 0)
                     {
@@ -137,7 +143,7 @@ namespace HmaxUnlocker.Engine
                         var strategy = PatchStrategyFactory.Create(report.Device.Chipset, _adb);
                         byte[] nvBackup = await strategy.BackupNvAsync(report.Paths, _logger);
 
-                        if (nvBackup.Length == 0)
+                        if (nvBackup == null || nvBackup.Length == 0)
                         {
                             report.Result = PatchResult.Failed;
                             report.Errors.Add(
@@ -153,10 +159,7 @@ namespace HmaxUnlocker.Engine
                             "NVSafety_" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
                         Directory.CreateDirectory(backupDir);
 
-                        string nvFileName = report.Device.Chipset == ChipsetType.MediaTek
-                            || report.Device.Chipset == ChipsetType.Unisoc
-                            ? "nvram_backup.tar.gz.safety"
-                            : "QCNv_data.bin.safety";
+                        const string nvFileName = "QCNv_data.bin.safety";
                         string nvFile = Path.Combine(backupDir, nvFileName);
                         File.WriteAllBytes(nvFile, nvBackup);
 
@@ -183,7 +186,10 @@ namespace HmaxUnlocker.Engine
                 if (report.Result == PatchResult.Success)
                     _logger.Info("  EFS/NV bypass: OK");
                 else
-                    _logger.Error($"  EFS/NV bypass: FAILED ({report.Result})");
+                {
+                    _logger.Error($"  EFS/NV bypass: FAILED ({report.Result}); additional device changes were skipped.");
+                    return report;
+                }
 
                 // ═══════════════════════════════════════
                 // Phase 6.5: Samsung package bypass
@@ -245,6 +251,11 @@ namespace HmaxUnlocker.Engine
                     _logger.Error("[Inject] No network selected for injection!");
                     return false;
                 }
+                if (!IsValidNetwork(network))
+                {
+                    _logger.Error("[Inject] Invalid MCC/MNC or operator name; injection aborted.");
+                    return false;
+                }
 
                 // فحص مسبق إجباري: بدون اتصال ورووت حقيقي لا ينفَّذ شيء
                 if (!await _adb.IsDeviceConnectedAsync())
@@ -263,8 +274,13 @@ namespace HmaxUnlocker.Engine
 
                 // 1. خصائص مستدامة (persist.*) — تُكتب فعلياً وتُقرأ للتحقق
                 _logger.Info("[Inject] Setting persistent properties (root + read-back verification)...");
-                await SetVerifiedPropAsync("persist.sys.hmax.mccmnc", fullCode);
-                await SetVerifiedPropAsync("persist.sys.hmax.bypassed", "1");
+                bool codeSaved = await SetVerifiedPropAsync("persist.sys.hmax.mccmnc", fullCode);
+                bool markerSaved = await SetVerifiedPropAsync("persist.sys.hmax.bypassed", "1");
+                if (!codeSaved || !markerSaved)
+                {
+                    _logger.Error("[Inject] Persistent properties were not verified; injection aborted.");
+                    return false;
+                }
 
                 // 2. خصائص التشغيل اللحظية (gsm.*) — root فقط؛ يعيد RIL كتابتها لاحقاً
                 _logger.Info("[Inject] Setting runtime operator properties (transient until RIL refresh)...");
@@ -312,7 +328,8 @@ namespace HmaxUnlocker.Engine
         /// <summary>يضبط خاصية عبر root ثم يقرأها للتأكد من تطبيقها فعلاً.</summary>
         private async Task<bool> SetVerifiedPropAsync(string key, string value, bool expectTransient = false)
         {
-            await _adb.ExecuteRootAsync($"setprop {key} '{value}'");
+            string escapedValue = (value ?? "").Replace("'", "'\\''");
+            await _adb.ExecuteRootAsync($"setprop {key} '{escapedValue}'");
             string readBack = (await _adb.ExecuteAsync($"getprop {key}")).Trim();
 
             if (readBack == value)
@@ -331,6 +348,11 @@ namespace HmaxUnlocker.Engine
         public async Task<LockStatus> CheckLockStatusAsync()
         {
             _logger.Info("=== Checking lock status ===");
+            if (!await _adb.IsDeviceConnectedAsync())
+                throw new InvalidOperationException("No device connected.");
+            if (!await _adb.HasRootAccessAsync())
+                throw new InvalidOperationException("Root access is required to read lock-related files.");
+
             var detector = new ChipsetDetector(_adb);
             var devInfo = await detector.DetectDeviceAsync();
             var pathEngine = new PathDiscoveryEngine(_adb);
@@ -339,6 +361,26 @@ namespace HmaxUnlocker.Engine
             var status = await strategy.DetectStatusAsync(paths, _logger);
             _logger.Info($"  Lock status: {status}");
             return status;
+        }
+
+        private static string NormalizeCsc(string targetCsc)
+        {
+            string csc = (targetCsc ?? "").Trim().ToUpperInvariant();
+            if (csc.Length != 3 || csc.Any(c => c < 'A' || c > 'Z'))
+                throw new ArgumentException("CSC must contain exactly three letters.", nameof(targetCsc));
+            return csc;
+        }
+
+        private static bool IsValidNetwork(NetworkEntry network)
+        {
+            return !string.IsNullOrWhiteSpace(network.Operator)
+                && network.Operator.Length <= 100
+                && !network.Operator.Contains("\r") && !network.Operator.Contains("\n")
+                && !string.IsNullOrEmpty(network.Mcc) && network.Mcc.Length == 3
+                && network.Mcc.All(char.IsDigit)
+                && !string.IsNullOrEmpty(network.Mnc)
+                && (network.Mnc.Length == 2 || network.Mnc.Length == 3)
+                && network.Mnc.All(char.IsDigit);
         }
 
         public async Task<BypassReport> ExecuteBackupModifyInjectAsync(string targetCsc = "XAA")
