@@ -32,7 +32,7 @@ namespace HmaxUnlocker.Forms
 
         private void InitializeEngine()
         {
-            _adb = new AdbShell("adb");
+            _adb = new AdbShell();
             _logger = new WinFormsLogger(txtLogOutput);
             _engine = new UniversalBypassEngine(_adb, _logger);
             _infoReader = new DeviceInfoReader(_adb, _logger);
@@ -153,6 +153,13 @@ namespace HmaxUnlocker.Forms
                     var backupEngine = new Engine.Backup.BackupEngine(_adb, _logger);
                     string path = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Backups");
                     string dir = await backupEngine.ExecuteAsync(path);
+                    if (backupEngine.LastSucceededFileCount == 0 || backupEngine.LastFailedFileCount > 0)
+                    {
+                        AppendLog("Quick backup was incomplete — bypass aborted.", Color.FromArgb(243, 139, 168));
+                        MessageBox.Show("The quick backup was incomplete. Bypass aborted for safety.",
+                            "Aborted", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
                     AppendLog("Quick backup saved: " + dir, Color.FromArgb(166, 227, 161));
                 }
                 catch (Exception bex)
@@ -173,23 +180,36 @@ namespace HmaxUnlocker.Forms
 
             try
             {
-                // تنفيذ البايسباس العام أولاً
                 var report = await _engine.ExecuteAsync("XAA");
+                foreach (string error in report.Errors)
+                    AppendLog("ERROR: " + error, Color.FromArgb(243, 139, 168));
+                if (report.PackageResult != null)
+                    foreach (string error in report.PackageResult.Errors)
+                        AppendLog("PACKAGE ERROR: " + error, Color.FromArgb(249, 226, 175));
 
-                // ثم حقن الـ MCC/MNC للشبكة المختارة لإزالة NETWORK_LOCKED نهائياً
-                bool success = await _engine.InjectMccMncAsync(selectedNetwork);
-
-                if (success || report.Result == PatchResult.Success)
+                if (report.Result != PatchResult.Success)
                 {
-                    lblLockStatus.Text = "Lock Status: Officially Unlocked (Bypassed)";
+                    AppendLog($"EFS/NV step did not succeed ({report.Result}); MCC/MNC injection skipped.",
+                        Color.FromArgb(243, 139, 168));
+                    MessageBox.Show("The EFS/NV operation did not complete successfully. See the log; no success was assumed.",
+                        "Operation incomplete", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                bool success = await _engine.InjectMccMncAsync(selectedNetwork);
+                if (success)
+                {
+                    lblLockStatus.Text = "SIM: LOADED after verified injection";
                     lblLockStatus.ForeColor = Color.FromArgb(166, 227, 161);
-                    AppendLog("Bypass and MCC/MNC injection completed successfully!", Color.FromArgb(166, 227, 161));
-                    MessageBox.Show("Bypass and MCC/MNC injection completed successfully!", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    AppendLog("EFS/NV step and MCC/MNC injection completed; SIM reached LOADED.", Color.FromArgb(166, 227, 161));
+                    MessageBox.Show("The operations completed and the SIM reached LOADED. This does not by itself prove an official carrier unlock.",
+                        "Completed", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 else
                 {
-                    AppendLog("Warning: SIM state did not report READY. Check logs.", Color.FromArgb(249, 226, 175));
-                    MessageBox.Show("Injection completed, but SIM state did not report READY. Please check logs.", "Notice", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    AppendLog("EFS/NV step succeeded, but MCC/MNC injection or SIM verification failed.", Color.FromArgb(249, 226, 175));
+                    MessageBox.Show("The EFS/NV step succeeded, but MCC/MNC injection or SIM verification failed. Check the log.",
+                        "Notice", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
             }
             catch (Exception ex)
@@ -212,7 +232,25 @@ namespace HmaxUnlocker.Forms
                 var backupEngine = new Engine.Backup.BackupEngine(_adb, _logger);
                 string path = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Backups");
                 string dir = await backupEngine.ExecuteAsync(path);
-                AppendLog("Backup saved: " + dir, Color.FromArgb(166, 227, 161));
+                if (backupEngine.LastSucceededFileCount == 0)
+                {
+                    AppendLog("Backup failed: no device files were saved.", Color.FromArgb(243, 139, 168));
+                    MessageBox.Show("Backup failed. No device files were saved; check the log.",
+                        "Backup", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                else if (backupEngine.LastFailedFileCount > 0)
+                {
+                    AppendLog($"Backup is incomplete: {backupEngine.LastSucceededFileCount} saved, " +
+                        $"{backupEngine.LastFailedFileCount} failed. Folder: {dir}",
+                        Color.FromArgb(249, 226, 175));
+                    MessageBox.Show("The backup is incomplete. Do not rely on it for a destructive operation; see the log.",
+                        "Incomplete backup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                else
+                {
+                    AppendLog($"Backup saved: {dir} ({backupEngine.LastSucceededFileCount} files)",
+                        Color.FromArgb(166, 227, 161));
+                }
             }
             catch (Exception ex) { AppendLog("Error: " + ex.Message, Color.FromArgb(243, 139, 168)); }
             finally { SetBusy(false); }
@@ -221,8 +259,10 @@ namespace HmaxUnlocker.Forms
         private void BtnNetworkConfig_Click(object sender, EventArgs e)
         {
             AppendLog("--- Network Config ---", Color.FromArgb(148, 226, 213));
-            var form = new NetworkConfigForm(_mccDatabase, _networkStore);
-            form.ShowDialog();
+            using (var form = new NetworkConfigForm(_mccDatabase, _networkStore))
+            {
+                form.ShowDialog(this);
+            }
             lblSelectedNetworks.Text = "Networks: " + _networkStore.GetSelectedSummary();
         }
 
@@ -261,6 +301,13 @@ namespace HmaxUnlocker.Forms
             {
                 var cpEngine = new Engine.Cp.CpInjectEngine(_adb, _logger);
                 defaultTarget = await cpEngine.DiscoverDefaultTargetAsync(Path.GetFileName(localCpFile));
+            }
+            catch (Exception ex)
+            {
+                AppendLog("CP target discovery failed: " + ex.Message, Color.FromArgb(243, 139, 168));
+                MessageBox.Show("Could not inspect the device for a CP target. Check ADB/root and retry.",
+                    "CP Inject", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
             }
             finally
             {
@@ -491,13 +538,32 @@ namespace HmaxUnlocker.Forms
                 foreach (var err in result.Errors)
                     AppendLog("  ERROR: " + err, Color.FromArgb(243, 139, 168));
 
-                string summary = block
-                    ? $"Blocked {result.HandledPackages.Count} update package(s). The device will no longer check or install OTA updates automatically."
-                    : $"Restored {result.HandledPackages.Count} update package(s). OTA updates are active again.";
-                AppendLog(summary, Color.FromArgb(242, 143, 173));
-                MessageBox.Show(summary, block ? "OTA Blocked" : "OTA Restored",
-                    MessageBoxButtons.OK,
-                    result.Errors.Count == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+                string action = block ? "Blocked" : "Restored";
+                string summary = $"{action} {result.HandledPackages.Count} update package(s); " +
+                    $"{result.SkippedPackages.Count} not present, {result.Errors.Count} failed.";
+                if (result.Result == PatchResult.Success)
+                {
+                    summary += block
+                        ? " The detected OTA packages were disabled successfully."
+                        : " The detected OTA packages were enabled successfully.";
+                    AppendLog(summary, Color.FromArgb(166, 227, 161));
+                    MessageBox.Show(summary, block ? "OTA Blocked" : "OTA Restored",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else if (result.Result == PatchResult.PartialSuccess)
+                {
+                    summary += " The operation was incomplete; see the log.";
+                    AppendLog(summary, Color.FromArgb(249, 226, 175));
+                    MessageBox.Show(summary, "OTA partially completed",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                else
+                {
+                    summary += " No OTA package was changed successfully.";
+                    AppendLog(summary, Color.FromArgb(243, 139, 168));
+                    MessageBox.Show(summary, "OTA operation failed",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
             }
             catch (Exception ex)
             {
